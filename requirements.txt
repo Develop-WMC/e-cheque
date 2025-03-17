@@ -1,0 +1,9 @@
+streamlit
+google-generativeai
+PyMuPDF
+Pillow
+pandas
+msal
+requests
+python-dotenv
+pdf2image
