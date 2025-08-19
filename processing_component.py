@@ -12,20 +12,22 @@ import google.generativeai as genai
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-# Constants
-MAPPING_FILE = "payee_mappings.csv"
-MAPPING_COLUMNS = ['Full Name', 'Short Form']
+# --- MODIFIED: Standardized mapping file name and columns to match app.py ---
+MAPPING_FILE = "payee_mapping.csv"
+MAPPING_COLUMNS = ['Payee', 'Teams_Folder', 'GL_Code']
 MAX_RETRIES = 5
-INITIAL_WAIT = 1  # seconds
-MAX_WAIT = 32  # seconds
+INITIAL_WAIT = 1
+MAX_WAIT = 32
 
 class APIRateLimitError(Exception):
+    """Custom exception for API rate limiting errors."""
     pass
 
 def generate_prompt(override_prompt: str = "") -> str:
+    """Generates the detailed prompt for the AI model."""
     if override_prompt:
         return override_prompt
-
+    # Using your original, detailed prompt
     prompt = """
     Extract the following information from this e-cheque and return it as JSON. For the currency field, 
     please normalize it according to these rules:
@@ -69,260 +71,174 @@ def generate_prompt(override_prompt: str = "") -> str:
     """
     return prompt
 
+# --- NEW: Function to load the mapping rules from the CSV ---
 def load_mappings(file_path=MAPPING_FILE):
-    """Load payee mappings from CSV file"""
+    """Loads payee mappings from the CSV file into a pandas DataFrame."""
     try:
         if os.path.exists(file_path):
-            df = pd.read_csv(file_path)
+            return pd.read_csv(file_path), None
         else:
-            df = pd.DataFrame(columns=MAPPING_COLUMNS)
-        return df, None
+            # If the file doesn't exist, return an empty DataFrame to avoid errors
+            return pd.DataFrame(columns=MAPPING_COLUMNS), None
     except Exception as e:
-        return None, f"Error loading mappings: {str(e)}"
+        # Return an empty DataFrame and the error message if loading fails
+        return pd.DataFrame(columns=MAPPING_COLUMNS), f"Error loading mappings: {str(e)}"
 
-def save_mappings(df, file_path=MAPPING_FILE):
-    """Save payee mappings to CSV file"""
-    try:
-        df.to_csv(file_path, index=False)
-        return True, None
-    except Exception as e:
-        return False, f"Error saving mappings: {str(e)}"
+# --- NEW: Function to find the mapping info for a specific payee ---
+def get_mapping_info(payee, mappings_df):
+    """
+    Looks up the Teams Folder and GL Code for a given payee name from the mappings DataFrame.
+    Performs a case-insensitive and whitespace-insensitive comparison.
+    """
+    if mappings_df.empty or payee is None:
+        return 'Uncategorized', 'N/A' # Default values if no mapping file or payee
 
-def get_payee_shortform(payee, mappings_df):
-    """Get short form of payee name from mappings"""
-    if mappings_df.empty:
-        return payee
-        
-    payee_upper = payee.upper().strip()
-    # Remove extra spaces between words and standardize spaces
+    # Standardize the input payee name for a reliable match
+    payee_upper = str(payee).upper().strip()
     payee_upper = ' '.join(payee_upper.split())
     
-    # Do the same standardization for the mapping names
-    mappings_df['Standardized_Name'] = mappings_df['Full Name'].str.upper().str.strip().apply(lambda x: ' '.join(x.split()))
+    # Create a standardized column in the DataFrame for comparison
+    mappings_df['Standardized_Name'] = mappings_df['Payee'].astype(str).str.upper().str.strip().apply(lambda x: ' '.join(x.split()) if pd.notna(x) else '')
     
+    # Find the matching row
     match = mappings_df[mappings_df['Standardized_Name'] == payee_upper]
+    
     if not match.empty:
-        return match.iloc[0]['Short Form']
-    return payee
+        # If a match is found, return the folder and GL code
+        folder = match.iloc[0]['Teams_Folder']
+        gl_code = match.iloc[0]['GL_Code']
+        return folder, gl_code
+        
+    # If no match is found, return default values
+    return 'Uncategorized', 'N/A'
 
 def pdf_to_image(pdf_bytes):
-    """Convert PDF to image"""
+    """Converts the first page of a PDF from bytes into an image in bytes."""
     try:
         pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-        if pdf_document.page_count == 0:
-            return None, "Uploaded PDF is empty."
-
-        page = pdf_document.load_page(0)
-        zoom = 4
-        mat = fitz.Matrix(zoom, zoom)
+        if pdf_document.page_count == 0: return None, "Uploaded PDF is empty."
+        page = pdf_document.load_page(0); zoom = 4; mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat, alpha=False)
-        img_bytes = pix.tobytes("png")
-        pdf_document.close()
+        img_bytes = pix.tobytes("png"); pdf_document.close()
         return img_bytes, None
-    except Exception as e:
-        return None, f"Error converting PDF to image: {str(e)}"
+    except Exception as e: return None, f"Error converting PDF to image: {str(e)}"
 
-def is_rate_limit_error(exception):
-    return isinstance(exception, APIRateLimitError) or (
-        isinstance(exception, Exception) and 
-        "429" in str(exception)
-    )
-
-@retry(
-    retry=retry_if_exception_type(APIRateLimitError),
-    wait=wait_exponential(multiplier=INITIAL_WAIT, max=MAX_WAIT),
-    stop=stop_after_attempt(MAX_RETRIES),
-    reraise=True
-)
+@retry(retry=retry_if_exception_type(APIRateLimitError), wait=wait_exponential(multiplier=INITIAL_WAIT, max=MAX_WAIT), stop=stop_after_attempt(MAX_RETRIES), reraise=True)
 def call_gemini_api_with_retry(model, prompt_parts):
+    """Calls the Gemini API with an exponential backoff retry mechanism."""
     try:
         response = model.generate_content(prompt_parts)
-        if not response:
-            raise APIRateLimitError("Empty response from API")
+        if not response: raise APIRateLimitError("Empty response from API")
         return response.text.strip()
     except Exception as e:
-        if "429" in str(e):
+        if "429" in str(e) or "resource has been exhausted" in str(e).lower():
             raise APIRateLimitError(f"Rate limit exceeded: {str(e)}")
         raise e
 
 def call_gemini_api(image_bytes, prompt, api_key):
-    """Call Gemini Vision API to analyze e-cheque"""
-    if not api_key:
-        return None, "Missing Gemini API key."
-
+    """Configures and calls the Gemini Vision API."""
+    if not api_key: return None, "Missing Gemini API key."
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash', 
-                                    generation_config=genai.GenerationConfig(temperature=0.0))
-
-        image_parts = [{"mime_type": "image/png", 
-                       "data": base64.b64encode(image_bytes).decode("utf-8")}]
-        prompt_parts = [prompt, image_parts[0]]
-        
-        # Add delay between requests
-        time.sleep(1)  # Add 1 second delay between requests
-        
+        model = genai.GenerativeModel('gemini-1.5-flash', generation_config=genai.GenerationConfig(temperature=0.0))
+        image_parts = [{"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}]
+        prompt_parts = [prompt, image_parts[0]]; time.sleep(1) # Small delay to respect rate limits
         try:
-            response_text = call_gemini_api_with_retry(model, prompt_parts)
-            return response_text, None
-        except APIRateLimitError as e:
-            return None, (f"Rate limit error after {MAX_RETRIES} retries. "
-                        f"Last error: {str(e)}. "
-                        f"Please wait a few minutes before trying again.")
-        except Exception as e:
-            return None, f"Unexpected error during API call: {str(e)}"
-            
-    except Exception as e:
-        return None, f"Error in API configuration: {str(e)}"
+            return call_gemini_api_with_retry(model, prompt_parts), None
+        except APIRateLimitError as e: return None, f"API rate limit error after {MAX_RETRIES} retries: {e}"
+        except Exception as e: return None, f"Unexpected error during API call: {e}"
+    except Exception as e: return None, f"Error in API configuration: {str(e)}"
 
 def sanitize_filename(filename):
-    """Remove invalid characters from filename"""
-    invalid_chars = r'[\/*?:"<>|]'
-    return re.sub(invalid_chars, '_', filename)
+    """Removes characters that are invalid for filenames."""
+    return re.sub(r'[\/*?:"<>|]', '_', str(filename))
 
 def generate_filename(key_identifier, payer, payee, currency, is_trailer_fee, is_management_fee):
-    """Generate appropriate filename based on extracted data"""
+    """Generates a standardized filename based on extracted e-cheque data."""
     sanitized_payee = sanitize_filename(payee)
+    suffix = ""
+    if is_trailer_fee: suffix = "_T"
+    elif is_management_fee and str(payee).upper() in ['OFS', 'OREANA FINANCIAL SERVICES LIMITED']: suffix = " MF"
 
-    # Check for trailer fee using AI's judgment
-    if is_trailer_fee:
-        if payer == "WEALTH MANAGEMENT CUBE LIMITED":
-            return f"{key_identifier} WMC-{sanitized_payee}_T.pdf"
-        elif payer == "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT":
-            return f"{currency} {key_identifier} {sanitized_payee}_T.pdf"
-        else:
-            return f"{sanitized_payee}_{key_identifier}_{currency}_T.pdf"
-    
-    # Check for management fee using AI's judgment
-    elif is_management_fee and payee.upper() in ['OFS', 'OREANA FINANCIAL SERVICES LIMITED']:
-        if payer == "WEALTH MANAGEMENT CUBE LIMITED":
-            return f"{key_identifier} WMC-{sanitized_payee} MF.pdf"
-        elif payer == "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT":
-            return f"{currency} {key_identifier} {sanitized_payee} MF.pdf"
-        else:
-            return f"{sanitized_payee}_{key_identifier}_{currency} MF.pdf"
-    
-    # Default naming without special suffixes
-    else:
-        if payer == "WEALTH MANAGEMENT CUBE LIMITED":
-            return f"{key_identifier} WMC-{sanitized_payee}.pdf"
-        elif payer == "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT":
-            return f"{currency} {key_identifier} {sanitized_payee}.pdf"
-        else:
-            return f"{sanitized_payee}_{key_identifier}_{currency}.pdf"
+    if payer == "WEALTH MANAGEMENT CUBE LIMITED": return f"{key_identifier} WMC-{sanitized_payee}{suffix}.pdf"
+    elif payer == "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT": return f"{currency} {key_identifier} {sanitized_payee}{suffix}.pdf"
+    else: return f"{sanitized_payee}_{key_identifier}_{currency}{suffix}.pdf"
 
-def process_echeque(pdf_data, gemini_api_key, mappings_df=None, custom_prompt=""):
-    """Process a single e-cheque file"""
-    # If no mappings provided, try to load
-    if mappings_df is None:
-        mappings_df, error = load_mappings()
-        if error:
-            mappings_df = pd.DataFrame(columns=MAPPING_COLUMNS)
-    
-    # Convert PDF to image
+# --- MODIFIED: This function now accepts the mappings_df to perform the lookup ---
+def process_echeque(pdf_data, gemini_api_key, mappings_df, custom_prompt=""):
+    """Processes a single e-cheque PDF, extracts data, and applies mapping rules."""
     image_bytes, error = pdf_to_image(pdf_data)
-    if error:
-        return None, error
+    if error: return None, error
     
-    # Get prompt
     prompt = generate_prompt(custom_prompt)
-    
-    # Call Gemini API
     raw_response, error = call_gemini_api(image_bytes, prompt, gemini_api_key)
-    if error:
-        return None, error
+    if error: return None, error
     
-    # Process response
     try:
-        # Clean the response string
-        clean_response = raw_response.strip()
-        if clean_response.startswith("```json"):
-            clean_response = clean_response[7:-3]
-        
+        clean_response = raw_response.strip().replace("```json", "").replace("```", "")
         parsed_json = json.loads(clean_response)
         
-        # Check for required fields
         required_fields = ["date", "payee", "key_identifier", "payer", "currency", "is_trailer_fee", "is_management_fee"]
         if not all(field in parsed_json for field in required_fields):
-            missing = [field for field in required_fields if field not in parsed_json]
+            missing = [f for f in required_fields if f not in parsed_json]
             return None, f"Missing required fields in API response: {', '.join(missing)}"
         
-        # Get short form of payee
-        original_payee = parsed_json['payee']
+        payee_name = parsed_json.get('payee')
         
-        # Only apply mapping if payer is NOT "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT"
-        if parsed_json['payer'] != "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT":
-            shortened_payee = get_payee_shortform(original_payee, mappings_df)
-        else:
-            # For client trust account, use the original payee name
-            shortened_payee = original_payee
+        # --- CORE LOGIC: Use the mapping file to get folder and GL code ---
+        teams_folder, gl_code = get_mapping_info(payee_name, mappings_df)
+        parsed_json['Teams_Folder'] = teams_folder
+        parsed_json['GL_Code'] = gl_code
+        # --- END OF CORE LOGIC ---
         
-        # Generate filename
         filename = generate_filename(
             key_identifier=parsed_json['key_identifier'],
             payer=parsed_json['payer'],
-            payee=shortened_payee,
+            payee=payee_name,
             currency=parsed_json['currency'],
-            is_trailer_fee=parsed_json['is_trailer_fee'],
-            is_management_fee=parsed_json['is_management_fee']
+            is_trailer_fee=parsed_json.get('is_trailer_fee', False),
+            is_management_fee=parsed_json.get('is_management_fee', False)
         )
         
-        # Return results
-        return {
-            'original_data': parsed_json,
-            'original_payee': original_payee,
-            'mapped_payee': shortened_payee,
-            'generated_filename': filename,
-            'pdf_data': pdf_data,
-            'next_step': parsed_json.get('next_step', 'Unknown')
-        }, None
+        return {'original_data': parsed_json, 'generated_filename': filename, 'pdf_data': pdf_data}, None
         
-    except json.JSONDecodeError as e:
-        return None, f"Error parsing JSON response: {str(e)}"
-    except Exception as e:
-        return None, f"Error processing e-cheque: {str(e)}"
+    except json.JSONDecodeError as e: return None, f"Error parsing JSON response: {e}. Response was: {raw_response[:500]}"
+    except Exception as e: return None, f"Error processing e-cheque: {e}"
 
+# --- MODIFIED: This function now loads the mapping file once before processing ---
 def process_echeques(downloaded_files, gemini_api_key, progress_callback=None):
-    """Process multiple e-cheque files"""
-    processed_files = []
-    errors = []
+    """
+    Processes a batch of e-cheque files.
+    It loads the payee mapping rules once for efficiency.
+    """
+    processed_files = []; errors = []
     
-    # Load mappings once for all files
-    mappings_df, error = load_mappings()
-    if error:
-        mappings_df = pd.DataFrame(columns=MAPPING_COLUMNS)
+    # Load mappings once for the entire batch to improve performance
+    mappings_df, mapping_error = load_mappings()
+    if mapping_error:
+        # Log the warning but continue processing with default values
+        print(f"WARNING: Could not load mapping file. {mapping_error}")
     
     total_files = len(downloaded_files)
     for i, file_info in enumerate(downloaded_files):
         try:
             if progress_callback:
-                progress_callback(f"Processing file {i+1}/{total_files}: {file_info['filename']}")
+                progress_callback(f"Processing file {i+1}/{total_files}: {file_info['filename']}", (i + 1) / total_files)
             
-            # Add delay between files
-            if i > 0:
-                time.sleep(2)  # Add 2 second delay between files
+            # Add a delay between API calls to avoid rate limiting
+            if i > 0: time.sleep(2) 
             
-            # Process each file
+            # Pass the loaded mappings_df to the single-file processor
             result, error = process_echeque(file_info['content'], gemini_api_key, mappings_df)
             
             if error:
-                errors.append({
-                    'filename': file_info['filename'],
-                    'error': error
-                })
+                errors.append({'filename': file_info['filename'], 'error': error})
                 continue
             
-            # Add original file info to result
             result['original_filename'] = file_info['filename']
-            result['email_subject'] = file_info.get('email_subject', 'Unknown')
-            result['email_date'] = file_info.get('email_date', 'Unknown')
-            
             processed_files.append(result)
             
         except Exception as e:
-            errors.append({
-                'filename': file_info['filename'],
-                'error': f"Unexpected error: {str(e)}"
-            })
+            errors.append({'filename': file_info['filename'], 'error': f"An unexpected error occurred: {e}"})
             
     return processed_files, errors
