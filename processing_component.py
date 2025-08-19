@@ -13,7 +13,7 @@ import time
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # --- MODIFIED: Standardized mapping file name and columns to match app.py ---
-MAPPING_FILE = "payee_mapping.csv"
+MAPPING_FILE = "payee_mappings.csv"
 MAPPING_COLUMNS = ['Payee', 'Teams_Folder', 'GL_Code']
 MAX_RETRIES = 5
 INITIAL_WAIT = 1
