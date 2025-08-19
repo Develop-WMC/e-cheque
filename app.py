@@ -153,7 +153,7 @@ def load_config():
     return {"gmail": {}, "teams": {}, "gemini": {}}
 
 # --- NEW: HELPER FUNCTIONS FOR MANAGING THE MAPPING CSV ---
-MAPPING_FILE = "payee_mapping.csv"
+MAPPING_FILE = "payee_mappings.csv"
 MAPPING_COLUMNS = ['Payee', 'Teams_Folder', 'GL_Code']
 
 def load_mapping_data():
