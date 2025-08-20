@@ -12,9 +12,9 @@ import google.generativeai as genai
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-# --- MODIFIED: Standardized mapping file name and columns to match app.py ---
+# --- MODIFIED: Simplified mapping constants ---
 MAPPING_FILE = "payee_mappings.csv"
-MAPPING_COLUMNS = ['Payee', 'Teams_Folder', 'GL_Code']
+MAPPING_COLUMNS = ['Payee', 'Teams_Folder'] # <<< REMOVED GL_Code
 MAX_RETRIES = 5
 INITIAL_WAIT = 1
 MAX_WAIT = 32
@@ -27,7 +27,6 @@ def generate_prompt(override_prompt: str = "") -> str:
     """Generates the detailed prompt for the AI model."""
     if override_prompt:
         return override_prompt
-    # Using your original, detailed prompt
     prompt = """
     Extract the following information from this e-cheque and return it as JSON. For the currency field, 
     please normalize it according to these rules:
@@ -71,46 +70,33 @@ def generate_prompt(override_prompt: str = "") -> str:
     """
     return prompt
 
-# --- NEW: Function to load the mapping rules from the CSV ---
 def load_mappings(file_path=MAPPING_FILE):
     """Loads payee mappings from the CSV file into a pandas DataFrame."""
     try:
         if os.path.exists(file_path):
-            return pd.read_csv(file_path), None
+            return pd.read_csv(file_path, dtype=str).fillna(""), None
         else:
-            # If the file doesn't exist, return an empty DataFrame to avoid errors
             return pd.DataFrame(columns=MAPPING_COLUMNS), None
     except Exception as e:
-        # Return an empty DataFrame and the error message if loading fails
         return pd.DataFrame(columns=MAPPING_COLUMNS), f"Error loading mappings: {str(e)}"
 
-# --- NEW: Function to find the mapping info for a specific payee ---
+# --- MODIFIED: This function now only returns the folder ---
 def get_mapping_info(payee, mappings_df):
-    """
-    Looks up the Teams Folder and GL Code for a given payee name from the mappings DataFrame.
-    Performs a case-insensitive and whitespace-insensitive comparison.
-    """
+    """Looks up the Teams Folder for a given payee name."""
     if mappings_df.empty or payee is None:
-        return 'Uncategorized', 'N/A' # Default values if no mapping file or payee
+        return 'Uncategorized' # Default value if no mapping file or payee
 
-    # Standardize the input payee name for a reliable match
     payee_upper = str(payee).upper().strip()
     payee_upper = ' '.join(payee_upper.split())
     
-    # Create a standardized column in the DataFrame for comparison
     mappings_df['Standardized_Name'] = mappings_df['Payee'].astype(str).str.upper().str.strip().apply(lambda x: ' '.join(x.split()) if pd.notna(x) else '')
     
-    # Find the matching row
     match = mappings_df[mappings_df['Standardized_Name'] == payee_upper]
     
     if not match.empty:
-        # If a match is found, return the folder and GL code
-        folder = match.iloc[0]['Teams_Folder']
-        gl_code = match.iloc[0]['GL_Code']
-        return folder, gl_code
+        return match.iloc[0]['Teams_Folder']
         
-    # If no match is found, return default values
-    return 'Uncategorized', 'N/A'
+    return 'Uncategorized'
 
 def pdf_to_image(pdf_bytes):
     """Converts the first page of a PDF from bytes into an image in bytes."""
@@ -142,7 +128,7 @@ def call_gemini_api(image_bytes, prompt, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash', generation_config=genai.GenerationConfig(temperature=0.0))
         image_parts = [{"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}]
-        prompt_parts = [prompt, image_parts[0]]; time.sleep(1) # Small delay to respect rate limits
+        prompt_parts = [prompt, image_parts[0]]; time.sleep(1)
         try:
             return call_gemini_api_with_retry(model, prompt_parts), None
         except APIRateLimitError as e: return None, f"API rate limit error after {MAX_RETRIES} retries: {e}"
@@ -164,7 +150,6 @@ def generate_filename(key_identifier, payer, payee, currency, is_trailer_fee, is
     elif payer == "WMC NOMINEE LIMITED-CLIENT TRUST ACCOUNT": return f"{currency} {key_identifier} {sanitized_payee}{suffix}.pdf"
     else: return f"{sanitized_payee}_{key_identifier}_{currency}{suffix}.pdf"
 
-# --- MODIFIED: This function now accepts the mappings_df to perform the lookup ---
 def process_echeque(pdf_data, gemini_api_key, mappings_df, custom_prompt=""):
     """Processes a single e-cheque PDF, extracts data, and applies mapping rules."""
     image_bytes, error = pdf_to_image(pdf_data)
@@ -185,11 +170,9 @@ def process_echeque(pdf_data, gemini_api_key, mappings_df, custom_prompt=""):
         
         payee_name = parsed_json.get('payee')
         
-        # --- CORE LOGIC: Use the mapping file to get folder and GL code ---
-        teams_folder, gl_code = get_mapping_info(payee_name, mappings_df)
+        # --- MODIFIED: Only get the folder and remove GL Code logic ---
+        teams_folder = get_mapping_info(payee_name, mappings_df)
         parsed_json['Teams_Folder'] = teams_folder
-        parsed_json['GL_Code'] = gl_code
-        # --- END OF CORE LOGIC ---
         
         filename = generate_filename(
             key_identifier=parsed_json['key_identifier'],
@@ -205,18 +188,12 @@ def process_echeque(pdf_data, gemini_api_key, mappings_df, custom_prompt=""):
     except json.JSONDecodeError as e: return None, f"Error parsing JSON response: {e}. Response was: {raw_response[:500]}"
     except Exception as e: return None, f"Error processing e-cheque: {e}"
 
-# --- MODIFIED: This function now loads the mapping file once before processing ---
 def process_echeques(downloaded_files, gemini_api_key, progress_callback=None):
-    """
-    Processes a batch of e-cheque files.
-    It loads the payee mapping rules once for efficiency.
-    """
+    """Processes a batch of e-cheque files."""
     processed_files = []; errors = []
     
-    # Load mappings once for the entire batch to improve performance
     mappings_df, mapping_error = load_mappings()
     if mapping_error:
-        # Log the warning but continue processing with default values
         print(f"WARNING: Could not load mapping file. {mapping_error}")
     
     total_files = len(downloaded_files)
@@ -225,10 +202,8 @@ def process_echeques(downloaded_files, gemini_api_key, progress_callback=None):
             if progress_callback:
                 progress_callback(f"Processing file {i+1}/{total_files}: {file_info['filename']}", (i + 1) / total_files)
             
-            # Add a delay between API calls to avoid rate limiting
             if i > 0: time.sleep(2) 
             
-            # Pass the loaded mappings_df to the single-file processor
             result, error = process_echeque(file_info['content'], gemini_api_key, mappings_df)
             
             if error:
