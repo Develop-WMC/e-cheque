@@ -152,9 +152,9 @@ def load_config():
             return toml.load(f)
     return {"gmail": {}, "teams": {}, "gemini": {}}
 
-# --- NEW: HELPER FUNCTIONS FOR MANAGING THE MAPPING CSV ---
+# --- HELPER FUNCTIONS FOR MAPPING CSV ---
 MAPPING_FILE = "payee_mappings.csv"
-MAPPING_COLUMNS = ['Payee', 'Teams_Folder', 'GL_Code']
+MAPPING_COLUMNS = ['Payee', 'Teams_Folder'] # <<< REMOVED GL_Code
 
 def load_mapping_data():
     """Loads the payee mapping data from the CSV file."""
@@ -163,7 +163,7 @@ def load_mapping_data():
         df.to_csv(MAPPING_FILE, index=False)
         return df
     try:
-        return pd.read_csv(MAPPING_FILE)
+        return pd.read_csv(MAPPING_FILE, dtype=str).fillna("")
     except pd.errors.EmptyDataError:
         return pd.DataFrame(columns=MAPPING_COLUMNS)
     except Exception as e:
@@ -173,6 +173,7 @@ def load_mapping_data():
 def save_mapping_data(df):
     """Saves the mapping DataFrame to the CSV file."""
     try:
+        df = df.astype(str)
         df.dropna(subset=['Payee'], inplace=True)
         df.drop_duplicates(subset=['Payee'], keep='last', inplace=True)
         df.to_csv(MAPPING_FILE, index=False)
@@ -180,7 +181,6 @@ def save_mapping_data(df):
     except Exception as e:
         st.error(f"Failed to save mapping file: {e}")
         return False
-# --- END OF NEW HELPER FUNCTIONS ---
 
 # Database functions for persistent storage
 def init_db():
@@ -268,7 +268,6 @@ st.markdown("""
 This application streamlines the e-cheque processing workflow. Use the tabs below to navigate through the steps.
 """)
 
-# --- MODIFIED: Added a new tab for Mapping Management ---
 tabs = st.tabs([
     "📩 Step 1: Download", 
     "🔍 Step 2: Process", 
@@ -276,263 +275,96 @@ tabs = st.tabs([
     "📂 Mapping Management"
 ])
 
-# STEP 1: DOWNLOAD TAB - FULL ORIGINAL CODE RESTORED
+# STEP 1: DOWNLOAD TAB - UNCHANGED
 with tabs[0]:
     st.markdown('<div class="step-header">Step 1: Download e-Cheques from Gmail</div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    This step connects to your Gmail account to search for and download e-cheque attachments.
-    Alternatively, you can upload e-cheque PDFs directly.
-    """)
-    
+    st.markdown("This step connects to your Gmail account to search for and download e-cheque attachments. Alternatively, you can upload e-cheque PDFs directly.")
     st.markdown('<div class="subheader">Gmail API Configuration</div>', unsafe_allow_html=True)
-    st.info("""
-    Gmail API credentials are configured from secrets.toml
-    - Client ID: ✓ Configured
-    - Client Secret: ✓ Configured 
-    - Token: ✓ Configured
-    """)
-    
+    st.info("Gmail API credentials are configured from secrets.toml\n- Client ID: ✓ Configured\n- Client Secret: ✓ Configured \n- Token: ✓ Configured")
     st.markdown('<div class="subheader">Email Search Criteria</div>', unsafe_allow_html=True)
-    
     with st.form(key="email_form"):
         st.markdown("**Set date range to search for e-cheque emails:**")
         col1, col2 = st.columns(2)
-        with col1:
-            start_date = st.date_input("Start Date", datetime.now().date())
-        with col2:
-            end_date = st.date_input("End Date", (datetime.now() + timedelta(days=1)).date())
-        
-        st.markdown("""
-        <div class="info-box">
-        <strong>Tip:</strong> Choose a broader date range if you're unsure when the e-cheques were received.
-        </div>
-        """, unsafe_allow_html=True)
-        
+        with col1: start_date = st.date_input("Start Date", datetime.now().date())
+        with col2: end_date = st.date_input("End Date", (datetime.now() + timedelta(days=1)).date())
+        st.markdown('<div class="info-box"><strong>Tip:</strong> Choose a broader date range if you\'re unsure when the e-cheques were received.</div>', unsafe_allow_html=True)
         submit_button = st.form_submit_button(label="🔍 Search and Download")
-    
     if submit_button:
         with st.spinner("Connecting to Gmail and searching for e-Cheques..."):
             try:
                 gmail_secrets = config.get('gmail', {})
-                progress_container = st.container()
-                progress_placeholder = progress_container.empty()
-                def progress_callback(message):
-                    progress_placeholder.info(message)
-                
-                downloaded_files, error = gmail_component.search_and_download_echeques(
-                    gmail_secrets, 
-                    start_date,
-                    end_date,
-                    progress_callback=progress_callback
-                )
-                
-                if error and not downloaded_files:
-                    st.error(f"Error: {error}")
-                elif not downloaded_files:
-                    st.warning("No e-Cheques found in the date range. Try expanding your search or uploading files manually.")
+                progress_container = st.container(); progress_placeholder = progress_container.empty()
+                def progress_callback(message): progress_placeholder.info(message)
+                downloaded_files, error = gmail_component.search_and_download_echeques(gmail_secrets, start_date, end_date, progress_callback=progress_callback)
+                if error and not downloaded_files: st.error(f"Error: {error}")
+                elif not downloaded_files: st.warning("No e-Cheques found in the date range. Try expanding your search or uploading files manually.")
                 else:
-                    st.markdown(f"""
-                    <div class="success-box">
-                    ✅ Successfully downloaded {len(downloaded_files)} e-Cheques!
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
+                    st.markdown(f'<div class="success-box">✅ Successfully downloaded {len(downloaded_files)} e-Cheques!</div>', unsafe_allow_html=True)
                     st.markdown('<div class="subheader">Downloaded e-Cheques</div>', unsafe_allow_html=True)
-                    file_data = []
-                    for file in downloaded_files:
-                        file_data.append({
-                            "Filename": file.get('filename', 'Unknown'),
-                            "Email Subject": file.get('email_subject', 'Unknown'),
-                            "Email Date": file.get('email_date', 'Unknown'),
-                            "Size": f"{len(file.get('content', b'')) / 1024:.1f} KB"
-                        })
-                    
-                    file_df = pd.DataFrame(file_data)
-                    st.dataframe(file_df, use_container_width=True)
-                    
+                    file_data = [{"Filename": f.get('filename', 'Unknown'), "Email Subject": f.get('email_subject', 'Unknown'), "Email Date": f.get('email_date', 'Unknown'), "Size": f"{len(f.get('content', b'')) / 1024:.1f} KB"} for f in downloaded_files]
+                    st.dataframe(pd.DataFrame(file_data), use_container_width=True)
                     st.session_state.downloaded_files = downloaded_files
-                    
-                    if downloaded_files:
-                        st.download_button(
-                            label="📥 Download All Attachments as ZIP",
-                            data=create_zip_from_files(downloaded_files),
-                            file_name="email_attachments.zip",
-                            mime="application/zip"
-                        )
-                    
-                    st.markdown("""
-                    <div class="info-box">
-                    <strong>Next:</strong> Proceed to Step 2 (Process) to extract data from these e-cheques.
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-    
+                    if downloaded_files: st.download_button(label="📥 Download All Attachments as ZIP", data=create_zip_from_files(downloaded_files), file_name="email_attachments.zip", mime="application/zip")
+                    st.markdown('<div class="info-box"><strong>Next:</strong> Proceed to Step 2 (Process) to extract data from these e-cheques.</div>', unsafe_allow_html=True)
+            except Exception as e: st.error(f"An error occurred: {str(e)}")
     st.markdown("---")
     st.markdown('<div class="subheader">Or Upload E-Cheques Manually</div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    If you already have e-cheque PDF files, you can upload them directly instead of downloading from Gmail.
-    """)
-    
-    uploaded_files = st.file_uploader(
-        "Drop PDF files here or click to browse", 
-        type=['pdf'], 
-        accept_multiple_files=True,
-        help="Upload one or more PDF files containing e-cheques"
-    )
-    
+    st.markdown("If you already have e-cheque PDF files, you can upload them directly instead of downloading from Gmail.")
+    uploaded_files = st.file_uploader("Drop PDF files here or click to browse", type=['pdf'], accept_multiple_files=True, help="Upload one or more PDF files containing e-cheques")
     if uploaded_files:
         if st.button("📤 Add Uploaded Files"):
-            new_files = []
-            for uploaded_file in uploaded_files:
-                file_content = uploaded_file.read()
-                new_files.append({
-                    'filename': uploaded_file.name,
-                    'content': file_content,
-                    'email_subject': 'Manual Upload',
-                    'email_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'size': len(file_content)
-                })
-            
+            new_files = [{'filename': f.name, 'content': f.read(), 'email_subject': 'Manual Upload', 'email_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'size': len(f.getvalue())} for f in uploaded_files]
             st.session_state.downloaded_files.extend(new_files)
-            st.markdown(f"""
-            <div class="success-box">
-            ✅ Added {len(new_files)} files to the download list
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f'<div class="success-box">✅ Added {len(new_files)} files to the download list</div>', unsafe_allow_html=True)
             st.rerun()
-    
     if st.session_state.downloaded_files and not submit_button:
         st.markdown('<div class="subheader">Files Ready for Processing</div>', unsafe_allow_html=True)
-        
-        file_data = []
-        for file in st.session_state.downloaded_files:
-            file_data.append({
-                "Filename": file.get('filename', 'Unknown'),
-                "Source": file.get('email_subject', 'Manual Upload'),
-                "Date": file.get('email_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-                "Size": f"{len(file.get('content', b'')) / 1024:.1f} KB"
-            })
-        
+        file_data = [{"Filename": f.get('filename', 'Unknown'), "Source": f.get('email_subject', 'Manual Upload'), "Date": f.get('email_date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')), "Size": f"{len(f.get('content', b'')) / 1024:.1f} KB"} for f in st.session_state.downloaded_files]
         st.dataframe(file_data, use_container_width=True)
-        
         col1, col2 = st.columns([1, 4])
         with col1:
-            if st.button("🗑️ Clear Files"):
-                st.session_state.downloaded_files = []
-                st.rerun()
+            if st.button("🗑️ Clear Files"): st.session_state.downloaded_files = []; st.rerun()
 
-# STEP 2: PROCESSING TAB - FULL ORIGINAL CODE RESTORED
+# STEP 2: PROCESSING TAB - UNCHANGED
 with tabs[1]:
     st.markdown('<div class="step-header">Step 2: Process e-Cheques</div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    This step uses AI to analyze the e-cheque PDFs and extract key information such as:
-    - Payee name
-    - Amount and currency
-    - Cheque date
-    - Next actions required
-    
-    The processed files will be renamed according to a standard format and prepared for upload.
-    """)
-    
+    st.markdown("This step uses AI to analyze the e-cheque PDFs and extract key information. The processed files will be renamed and prepared for upload.")
     if not st.session_state.downloaded_files:
-        st.markdown("""
-        <div class="warning-box">
-        ⚠️ Please download e-Cheques from Gmail or upload PDFs directly in Step 1 first.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="warning-box">⚠️ Please download e-Cheques from Gmail or upload PDFs directly in Step 1 first.</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="subheader">Files Ready for Processing</div>', unsafe_allow_html=True)
-        
-        skip_processed = st.checkbox("Skip already processed files", value=True,
-                                   help="When checked, files that have been previously processed in this session will be skipped.")
-        
-        files_to_process = []
-        skipped_files = []
-        
-        for file in st.session_state.downloaded_files:
-            if skip_processed and file['filename'] in st.session_state.processed_filenames:
-                skipped_files.append(file['filename'])
-                continue
-            files_to_process.append(file)
-        
-        if skipped_files:
-            st.info(f"Skipping {len(skipped_files)} previously processed files")
-        
-        if not files_to_process:
-            st.warning("All files have already been processed. Clear the processed files or uncheck 'Skip already processed files' to reprocess.")
+        skip_processed = st.checkbox("Skip already processed files", value=True, help="When checked, files that have been previously processed will be skipped.")
+        files_to_process = [f for f in st.session_state.downloaded_files if not (skip_processed and f['filename'] in st.session_state.processed_filenames)]
+        skipped_files = [f['filename'] for f in st.session_state.downloaded_files if skip_processed and f['filename'] in st.session_state.processed_filenames]
+        if skipped_files: st.info(f"Skipping {len(skipped_files)} previously processed files")
+        if not files_to_process: st.warning("All files have already been processed. Uncheck 'Skip already processed files' to reprocess.")
         else:
-            file_names = [file['filename'] for file in files_to_process]
             st.markdown(f"**{len(files_to_process)} files ready for processing:**")
-            for name in file_names:
-                st.markdown(f"- {name}")
-
+            for name in [f['filename'] for f in files_to_process]: st.markdown(f"- {name}")
             if st.session_state.processed_files:
                 st.markdown("---")
                 st.markdown('<div class="subheader">Download Previously Processed Files</div>', unsafe_allow_html=True)
-                
-                zip_files = []
-                for processed_file in st.session_state.processed_files:
-                    zip_files.append({
-                        'filename': processed_file['generated_filename'],
-                        'content': processed_file['pdf_data']
-                    })
-                
-                st.download_button(
-                    label="📥 Download All Processed Files as ZIP",
-                    data=create_zip_from_files(zip_files),
-                    file_name=f"all_processed_echeques_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                    mime="application/zip"
-                )
-    
+                zip_files = [{'filename': pf['generated_filename'], 'content': pf['pdf_data']} for pf in st.session_state.processed_files]
+                st.download_button(label="📥 Download All Processed Files as ZIP", data=create_zip_from_files(zip_files), file_name=f"all_processed_echeques_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip")
         gemini_api_key = config.get('gemini', {}).get('api_key', '')
-        
         if st.button("🔍 Process e-Cheques"):
-            if not gemini_api_key:
-                st.error("Gemini API key is not configured. Please contact your administrator.")
-            elif not files_to_process:
-                st.error("No files available to process.")
+            if not gemini_api_key: st.error("Gemini API key is not configured. Please contact your administrator.")
+            elif not files_to_process: st.error("No files available to process.")
             else:
                 with st.spinner("Processing e-Cheques... This may take a moment."):
                     try:
-                        progress_container = st.container()
-                        progress_placeholder = progress_container.empty()
-                        progress_bar = st.progress(0)
-                        
+                        progress_container = st.container(); progress_placeholder = progress_container.empty(); progress_bar = st.progress(0)
                         def progress_callback(message, progress=None):
                             progress_placeholder.info(message)
-                            if progress is not None:
-                                progress_bar.progress(progress)
-                        
-                        processed_files, errors = processing_component.process_echeques(
-                            files_to_process, 
-                            gemini_api_key,
-                            progress_callback=progress_callback
-                        )
-                        
+                            if progress is not None: progress_bar.progress(progress)
+                        processed_files, errors = processing_component.process_echeques(files_to_process, gemini_api_key, progress_callback=progress_callback)
                         for file in processed_files:
-                            if file not in st.session_state.processed_files:
-                                st.session_state.processed_files.append(file)
-                        
-                        for processed_file in processed_files:
-                            save_to_db(processed_file)
-                        
-                        for file in files_to_process:
-                            st.session_state.processed_filenames.add(file['filename'])
-                        
+                            if file not in st.session_state.processed_files: st.session_state.processed_files.append(file)
+                        for processed_file in processed_files: save_to_db(processed_file)
+                        for file in files_to_process: st.session_state.processed_filenames.add(file['filename'])
                         if processed_files:
-                            st.markdown(f"""
-                            <div class="success-box">
-                            ✅ Successfully processed {len(processed_files)} e-cheques!
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
+                            st.markdown(f'<div class="success-box">✅ Successfully processed {len(processed_files)} e-cheques!</div>', unsafe_allow_html=True)
                             st.markdown('<div class="subheader">Processing Results</div>', unsafe_allow_html=True)
-                            
                             results_data = []
                             for result in processed_files:
                                 data = result['original_data']
@@ -542,65 +374,29 @@ with tabs[1]:
                                     "Payee": data.get('payee', 'Unknown'),
                                     "Amount": f"{data.get('currency', '')} {data.get('amount_numerical', 'Unknown')}",
                                     "Date": data.get('date', 'Unknown'),
-                                    "Teams Folder": data.get('Teams_Folder', 'Not Mapped'),
-                                    "GL Code": data.get('GL_Code', 'Not Mapped')
+                                    "Teams Folder": data.get('Teams_Folder', 'Not Mapped')
+                                    # <<< REMOVED GL Code from results table
                                 })
-                            
-                            results_df = pd.DataFrame(results_data)
-                            st.dataframe(results_df, use_container_width=True)
-
-                            zip_files = []
-                            for processed_file in processed_files:
-                                zip_files.append({
-                                    'filename': processed_file['generated_filename'],
-                                    'content': processed_file['pdf_data']
-                                })
-                            
-                            st.download_button(
-                                label="📥 Download Newly Processed Files as ZIP",
-                                data=create_zip_from_files(zip_files),
-                                file_name=f"processed_echeques_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                                mime="application/zip"
-                            )
-                            
-                            st.markdown("""
-                            <div class="info-box">
-                            <strong>Next:</strong> Proceed to Step 3 (Upload) to send these files to Microsoft Teams.
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
+                            st.dataframe(pd.DataFrame(results_data), use_container_width=True)
+                            zip_files = [{'filename': pf['generated_filename'], 'content': pf['pdf_data']} for pf in processed_files]
+                            st.download_button(label="📥 Download Newly Processed Files as ZIP", data=create_zip_from_files(zip_files), file_name=f"processed_echeques_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip")
+                            st.markdown('<div class="info-box"><strong>Next:</strong> Proceed to Step 3 (Upload) to send these files to Microsoft Teams.</div>', unsafe_allow_html=True)
                             if errors:
                                 with st.expander("Processing Errors"):
-                                    for error in errors:
-                                        st.error(f"File: {error['filename']} - Error: {error['error']}")
+                                    for error in errors: st.error(f"File: {error['filename']} - Error: {error['error']}")
                         else:
                             st.error("No files were successfully processed.")
                             if errors:
                                 st.subheader("Errors")
-                                for error in errors:
-                                    st.error(f"File: {error['filename']} - Error: {error['error']}")
-                    
-                    except Exception as e:
-                        st.error(f"An error occurred during processing: {str(e)}")
+                                for error in errors: st.error(f"File: {error['filename']} - Error: {error['error']}")
+                    except Exception as e: st.error(f"An error occurred during processing: {str(e)}")
 
-# STEP 3: TEAMS UPLOAD TAB - FULL ORIGINAL CODE RESTORED
+# STEP 3: TEAMS UPLOAD TAB - UNCHANGED
 with tabs[2]:
     st.markdown('<div class="step-header">Step 3: Upload to Microsoft Teams</div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    This step uploads the processed e-cheque files to Microsoft Teams in your Finance department.
-    Files will be organized into appropriate folders based on their content and properties.
-    """)
-    
+    st.markdown("This step uploads the processed e-cheque files to Microsoft Teams in your Finance department.")
     st.markdown('<div class="subheader">Microsoft Teams Configuration</div>', unsafe_allow_html=True)
-    st.info("""
-    Microsoft Teams API credentials are configured from secrets.toml:
-    - Client ID: ✓ Configured
-    - Client Secret: ✓ Configured
-    - Tenant ID: ✓ Configured
-    - Finance Team ID: ✓ Configured
-    """)
-
+    st.info("Microsoft Teams API credentials are configured from secrets.toml:\n- Client ID: ✓ Configured\n- Client Secret: ✓ Configured\n- Tenant ID: ✓ Configured\n- Finance Team ID: ✓ Configured")
     st.markdown("---")
     col1, col2 = st.columns([1, 4])
     with col1:
@@ -608,175 +404,82 @@ with tabs[2]:
             st.session_state.downloaded_files = []
             st.session_state.processed_files = []
             st.session_state.processed_filenames = set()
-            if 'upload_results' in st.session_state:
-                del st.session_state.upload_results
-            if 'select_all_files' in st.session_state:
-                st.session_state.select_all_files = False
-            
+            if 'upload_results' in st.session_state: del st.session_state.upload_results
+            if 'select_all_files' in st.session_state: st.session_state.select_all_files = False
             try:
-                conn = sqlite3.connect('echeque_processing.db')
-                c = conn.cursor()
-                c.execute("DELETE FROM processed_files")
-                conn.commit()
-                conn.close()
-                st.success("Successfully cleared all files!")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error clearing database: {str(e)}")
-    with col2:
-        st.info("Click 'Clear All Files' to permanently remove all downloaded and processed files from the system.")
-    
+                conn = sqlite3.connect('echeque_processing.db'); c = conn.cursor()
+                c.execute("DELETE FROM processed_files"); conn.commit(); conn.close()
+                st.success("Successfully cleared all files!"); time.sleep(1); st.rerun()
+            except Exception as e: st.error(f"Error clearing database: {str(e)}")
+    with col2: st.info("Click 'Clear All Files' to permanently remove all downloaded and processed files from the system.")
     if not st.session_state.processed_files:
-        st.markdown("""
-        <div class="warning-box">
-        ⚠️ No processed files to upload. Please complete Step 2 (Process) first.
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown('<div class="warning-box">⚠️ No processed files to upload. Please complete Step 2 (Process) first.</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="subheader">Upload Options</div>', unsafe_allow_html=True)
-        
         st.markdown(f"**{len(st.session_state.processed_files)} files available for upload:**")
-        
-        if 'select_all_files' not in st.session_state:
-            st.session_state.select_all_files = False
-        
+        if 'select_all_files' not in st.session_state: st.session_state.select_all_files = False
         col1, col2, col3 = st.columns([1, 1, 5])
         with col1:
-            if st.button("Select All"):
-                st.session_state.select_all_files = True
-                st.rerun()
+            if st.button("Select All"): st.session_state.select_all_files = True; st.rerun()
         with col2:
-            if st.button("Clear Selection"):
-                st.session_state.select_all_files = False
-                st.rerun()
+            if st.button("Clear Selection"): st.session_state.select_all_files = False; st.rerun()
         with col3:
             if 'upload_results' in st.session_state and st.button("Reset Upload Status"):
-                if 'upload_results' in st.session_state:
-                    del st.session_state.upload_results
+                if 'upload_results' in st.session_state: del st.session_state.upload_results
                 st.rerun()
-        
         selected_files = []
         with st.container():
             for i, file in enumerate(st.session_state.processed_files):
                 if st.checkbox(f"{file['generated_filename']}", value=st.session_state.select_all_files, key=f"pdf_{i}"):
                     selected_files.append(file)
-        
-        if selected_files:
-            st.markdown(f"**{len(selected_files)} files selected for upload**")
-        else:
-            st.warning("Please select at least one file to upload")
-        
+        if selected_files: st.markdown(f"**{len(selected_files)} files selected for upload**")
+        else: st.warning("Please select at least one file to upload")
         if st.button("📤 Upload to Teams"):
-            if not selected_files:
-                st.error("Please select at least one file to upload.")
+            if not selected_files: st.error("Please select at least one file to upload.")
             else:
                 with st.spinner(f"Uploading {len(selected_files)} files to Microsoft Teams..."):
                     try:
-                        teams_creds = config.get('teams', {})
-                        finance_team_id = teams_creds.get('finance_team_id', '')
-                        
-                        progress_container = st.container()
-                        progress_placeholder = progress_container.empty()
-                        progress_bar = st.progress(0)
-                        
+                        teams_creds = config.get('teams', {}); finance_team_id = teams_creds.get('finance_team_id', '')
+                        progress_container = st.container(); progress_placeholder = progress_container.empty(); progress_bar = st.progress(0)
                         def progress_callback(message, progress=None):
                             progress_placeholder.info(message)
-                            if progress is not None:
-                                progress_bar.progress(progress)
-                        
-                        if len(selected_files) > 1:
-                            progress_placeholder.info(f"Preparing to upload {len(selected_files)} files in batch...")
-                            
-                        upload_results, error, _, _ = teams_component.upload_files_to_teams(
-                            selected_files,
-                            teams_creds.get('client_id', ''),
-                            teams_creds.get('client_secret', ''),
-                            teams_creds.get('tenant_id', ''),
-                            finance_team_id,
-                            progress_callback=progress_callback
-                        )
-                        
+                            if progress is not None: progress_bar.progress(progress)
+                        if len(selected_files) > 1: progress_placeholder.info(f"Preparing to upload {len(selected_files)} files in batch...")
+                        upload_results, error, _, _ = teams_component.upload_files_to_teams(selected_files, teams_creds.get('client_id', ''), teams_creds.get('client_secret', ''), teams_creds.get('tenant_id', ''), finance_team_id, progress_callback=progress_callback)
                         st.session_state.upload_results = upload_results
-                        
-                        if error:
-                            st.error(f"Teams upload failed: {error}")
+                        if error: st.error(f"Teams upload failed: {error}")
                         elif upload_results:
-                            success_count = sum(1 for result in upload_results if result['success'])
-                            
-                            if success_count == len(upload_results):
-                                st.markdown(f"""
-                                <div class="success-box">
-                                ✅ Successfully uploaded all {len(upload_results)} files to Teams!
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.warning(f"Uploaded {success_count} out of {len(upload_results)} files to Teams.")
-                            
+                            success_count = sum(1 for r in upload_results if r['success'])
+                            if success_count == len(upload_results): st.markdown(f'<div class="success-box">✅ Successfully uploaded all {len(upload_results)} files to Teams!</div>', unsafe_allow_html=True)
+                            else: st.warning(f"Uploaded {success_count} out of {len(upload_results)} files to Teams.")
                             st.markdown('<div class="subheader">Upload Results</div>', unsafe_allow_html=True)
-                            
-                            results_data = []
-                            for result in upload_results:
-                                results_data.append({
-                                    "Filename": result['filename'],
-                                    "Status": "✅ Success" if result['success'] else "❌ Failed",
-                                    "Target Folder": result.get('target_folder', 'Unknown'),
-                                    "Error": result.get('error', '') if not result['success'] else ''
-                                })
-                            
+                            results_data = [{"Filename": r['filename'], "Status": "✅ Success" if r['success'] else "❌ Failed", "Target Folder": r.get('target_folder', 'Unknown'), "Error": r.get('error', '') if not r['success'] else ''} for r in upload_results]
                             results_df = pd.DataFrame(results_data)
                             st.dataframe(results_df, use_container_width=True)
-                            
                             if success_count > 0:
-                                st.markdown("""
-                                <div class="info-box">
-                                <strong>Complete!</strong> The e-cheques have been successfully uploaded to Teams and are now available for the Finance team.
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
+                                st.markdown('<div class="info-box"><strong>Complete!</strong> The e-cheques have been successfully uploaded to Teams.</div>', unsafe_allow_html=True)
                                 csv_data = results_df.to_csv(index=False)
-                                st.download_button(
-                                    label="📊 Download Upload Report as CSV",
-                                    data=csv_data,
-                                    file_name=f"teams_upload_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                                    mime="text/csv"
-                                )
-                    
-                    except Exception as e:
-                        st.error(f"An error occurred during Teams upload: {str(e)}")
-        
+                                st.download_button(label="📊 Download Upload Report as CSV", data=csv_data, file_name=f"teams_upload_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv")
+                    except Exception as e: st.error(f"An error occurred during Teams upload: {str(e)}")
         if 'upload_results' in st.session_state and st.session_state.upload_results:
             st.markdown("---")
             st.markdown('<div class="subheader">Previous Upload Results</div>', unsafe_allow_html=True)
-            
-            results_data = []
-            for result in st.session_state.upload_results:
-                results_data.append({
-                    "Filename": result['filename'],
-                    "Status": "✅ Success" if result['success'] else "❌ Failed",
-                    "Target Folder": result.get('target_folder', 'Unknown'),
-                    "Error": result.get('error', '') if not result['success'] else ''
-                })
-            
-            results_df = pd.DataFrame(results_data)
-            st.dataframe(results_df, use_container_width=True)
+            results_data = [{"Filename": r['filename'], "Status": "✅ Success" if r['success'] else "❌ Failed", "Target Folder": r.get('target_folder', 'Unknown'), "Error": r.get('error', '') if not r['success'] else ''} for r in st.session_state.upload_results]
+            st.dataframe(pd.DataFrame(results_data), use_container_width=True)
 
-# --- NEW: MAPPING MANAGEMENT TAB ---
+# MAPPING MANAGEMENT TAB - SIMPLIFIED
 with tabs[3]:
     st.markdown('<div class="step-header">Manage Payee Mapping Rules</div>', unsafe_allow_html=True)
     st.markdown("""
-    Use this spreadsheet editor to manage the rules that map a payee's full name to a specific Teams folder and GL Code.
+    Use this spreadsheet editor to manage the rules that map a payee's full name to a specific Teams folder.
     - **To Add a Row:** Scroll to the bottom and start typing in the new row.
     - **To Delete a Row:** Select the row(s) using the checkboxes on the left and click the trash can icon 🗑️ that appears.
     - **To Search:** Click the magnifying glass icon 🔍.
     
     **Important: Click the 'Save Changes' button below after you finish editing.**
     """)
-
     mapping_df = load_mapping_data()
-
     st.markdown("---")
-    
     edited_df = st.data_editor(
         mapping_df,
         num_rows="dynamic",
@@ -784,13 +487,11 @@ with tabs[3]:
         column_config={
             "Payee": st.column_config.TextColumn("Full Payee Name (from cheque)", required=True),
             "Teams_Folder": st.column_config.TextColumn("Target Teams Folder", required=True),
-            "GL_Code": st.column_config.TextColumn("GL Code (Optional)"),
+            # <<< REMOVED GL_Code from the editor
         },
         height=500
     )
-
     st.markdown("---")
-
     if st.button("💾 Save Changes to Mapping File", type="primary"):
         if save_mapping_data(edited_df):
             st.success("✅ Mapping rules have been saved successfully!")
@@ -803,7 +504,7 @@ with tabs[3]:
 st.markdown("---")
 st.markdown("""
 <div class="footer">
-<p><strong>e-Cheque Processing Pipeline</strong> | Version 1.1.0 | © 2025 WMC Finance Team</p>
+<p><strong>e-Cheque Processing Pipeline</strong> | Version 1.5.0 (Simplified) | © 2025 WMC Finance Team</p>
 <p>For help or support, contact the IT Support Team.</p>
 </div>
 """, unsafe_allow_html=True)
