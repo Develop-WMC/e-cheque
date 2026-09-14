@@ -161,7 +161,7 @@ def call_gemini_api(image_bytes, prompt, api_key):
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(
-            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
             generation_config=genai.GenerationConfig(temperature=0.0),
         )
         image_parts = [{"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode("utf-8")}]
